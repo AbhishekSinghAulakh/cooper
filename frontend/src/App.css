@@ -1,0 +1,345 @@
+/* General layout */
+body {
+  font-family: Arial, sans-serif;
+  margin: 0;
+  padding: 0;
+  background: #f8f9fa;
+  color: #333;
+}
+
+.container {
+  max-width: 960px;
+  margin: 30px auto;
+  padding: 20px;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+}
+
+h2 {
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+/* Form grid layout */
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 20px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.form-group label {
+  font-weight: bold;
+  margin-bottom: 5px;
+}
+
+.required {
+  color: red;
+  margin-left: 4px;
+}
+
+input,
+textarea {
+  padding: 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 14px;
+}
+
+textarea {
+  min-height: 60px;
+  resize: vertical;
+}
+
+/* Buttons */
+.button-group {
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+  margin-top: 30px;
+}
+
+.btn {
+  padding: 10px 20px;
+  font-size: 16px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  transition: background 0.3s;
+}
+
+.btn.simulate {
+  background-color: #6c757d;
+  color: white;
+}
+
+.btn.simulate:hover {
+  background-color: #5a6268;
+}
+
+.btn.submit {
+  background-color: #28a745;
+  color: white;
+}
+
+.btn.submit:hover {
+  background-color: #218838;
+}
+
+/* Navigation links */
+.navbar {
+  background-color: #343a40;
+  padding: 10px 0;
+  display: flex;
+  justify-content: center;
+  gap: 30px;
+}
+
+.navbar a {
+  color: #ffffff;
+  text-decoration: none;
+  font-weight: bold;
+}
+
+.navbar a:hover {
+  text-decoration: underline;
+}
+
+/* Table Styling */
+.table-container {
+  margin-top: 30px;
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+th, td {
+  padding: 10px;
+  text-align: left;
+  border-bottom: 1px solid #dee2e6;
+}
+
+th {
+  background-color: #f1f3f5;
+  font-weight: bold;
+}
+
+tr:hover {
+  background-color: #f9f9f9;
+}
+
+.actions button {
+  margin-right: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.actions .edit-btn {
+  background-color: #007bff;
+  color: white;
+}
+
+.actions .edit-btn:hover {
+  background-color: #0069d9;
+}
+
+/* Message for Empty Tables */
+.empty-message {
+  text-align: center;
+  font-size: 16px;
+  color: #555;
+  padding: 40px 0;
+}
+
+/* Chart container */
+.chart-section {
+  margin-top: 40px;
+}
+
+.chart-placeholder {
+  background: #f8f9fa;
+  padding: 30px;
+  text-align: center;
+  border: 2px dashed #ccc;
+  color: #999;
+  border-radius: 6px;
+}
+
+
+/* Add to your existing App.css */
+
+.modal-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+.modal {
+  background-color: white;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  min-width: 300px;
+}
+
+.modal label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-weight: bold;
+}
+
+.modal input[type="date"],
+.modal input[type="number"] {
+  padding: 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  width: 100%;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 15px;
+}
+
+.modal-actions button {
+  padding: 8px 15px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.modal-actions button:first-child {
+  background-color: #4CAF50;
+  color: white;
+}
+
+.modal-actions button:last-child {
+  background-color: #f44336;
+  color: white;
+}
+
+.warn {
+  color: orange;
+  font-weight: bold;
+  margin-left: 5px;
+}
+
+/* File: src/App.css (Add these rules) */
+
+.table-responsive {
+  width: 100%; /* Ensure it takes full width of its parent */
+  overflow-x: auto; /* Enables horizontal scrolling if content overflows */
+  -webkit-overflow-scrolling: touch; /* Improves scrolling experience on touch devices */
+  margin-bottom: 20px; /* Add some space below the table */
+}
+
+.table-responsive table {
+  width: 100%; /* Make the table take 100% of the scrollable container */
+  border-collapse: collapse; /* For clean table borders */
+  min-width: 1200px; /* A minimum width for the table to prevent excessive squishing, adjust as needed */
+}
+
+/* Optional: Add some padding to table cells for better readability */
+.table-responsive th,
+.table-responsive td {
+  padding: 8px 12px;
+  border: 1px solid #ddd;
+  text-align: left;
+  white-space: nowrap; /* Prevent text wrapping in cells */
+}
+
+/* Optional: Make header row sticky if you have many rows */
+.table-responsive thead th {
+  position: sticky;
+  top: 0;
+  background-color: #f2f2f2;
+  z-index: 1;
+}
+
+/* General table styling (adjust as per your existing styles) */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 20px;
+}
+
+th,
+td {
+  padding: 10px;
+  border: 1px solid #ccc;
+  text-align: left;
+}
+
+th {
+  background-color: #f0f0f0;
+}
+
+/* Basic Modal Styling (if not already present) */
+.modal-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+.modal {
+  background: white;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+  z-index: 1001;
+}
+
+.modal-actions {
+  margin-top: 20px;
+  text-align: right;
+}
+
+.modal-actions button {
+  margin-left: 10px;
+  padding: 8px 15px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.modal-actions button:first-child {
+  background-color: #007bff;
+  color: white;
+}
+
+.modal-actions button:last-child {
+  background-color: #6c757d;
+  color: white;
+}
