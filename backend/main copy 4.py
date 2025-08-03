@@ -28,22 +28,10 @@ DB_NAME = "portfolio.db"
 POSITIONS_EXCEL_FILE = "/Users/abhisheksingh/Library/CloudStorage/OneDrive-Personal/mfarm/factor9.xlsx"
 DIVIDENDS_EXCEL_FILE = "/Users/abhisheksingh/Library/CloudStorage/OneDrive-Personal/mfarm/dividends.xlsx"
 
-def dict_factory(cursor, row):
-    """
-    A custom row factory to return rows as dictionaries.
-    This is a more robust alternative to `conn.row_factory = sqlite3.Row`.
-    """
-    d = {}
-    for idx, col in enumerate(cursor.description):
-        d[col[0]] = row[idx]
-    return d
-
 
 def init_db():
     with sqlite3.connect(DB_NAME) as conn:
         c = conn.cursor()
-        print("init_db: Checking/Creating positions table...")
-        # Create positions table if it doesn't exist (with ALL necessary columns)
         c.execute("""
             CREATE TABLE IF NOT EXISTS positions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,15 +51,9 @@ def init_db():
                 total_pnl REAL,
                 pct_pnl REAL,
                 tvm REAL,
-                pos_age TEXT,
-                account TEXT,          
-                current_price REAL,    
-                daily_change REAL,     
-                daily_pnl REAL         
+                pos_age TEXT
             )
         """)
-        
-        print("init_db: Checking/Creating portfolio_snapshots table...")
         c.execute("""
             CREATE TABLE IF NOT EXISTS portfolio_snapshots (
                 date TEXT PRIMARY KEY,
@@ -84,42 +66,31 @@ def init_db():
             )
         """)
         conn.commit()
-        print("init_db: Database initialization complete.")
 
 init_db()
 
+_raw_excel_data = []
 _dividends_data = []
 
-def load_raw_excel_data_into_db():
-    """
-    Loads all raw data from the Excel file into the SQLite database's positions table.
-    This function specifically manages 'BUY' type positions, ensuring the DB reflects
-    the current open positions from the Excel source, while preserving 'SELL' type records.
-    """
-    print(f"load_raw_excel_data_into_db: Attempting to load positions data from Excel: {POSITIONS_EXCEL_FILE}")
+def load_raw_excel_data():
+    """Loads all raw data from the Excel file."""
+    global _raw_excel_data
+    print(f"Attempting to load data from: {POSITIONS_EXCEL_FILE}")
     try:
         df = pd.read_excel(POSITIONS_EXCEL_FILE)
-        print(f"load_raw_excel_data_into_db: Excel file '{POSITIONS_EXCEL_FILE}' read successfully.")
-        df.columns = df.columns.str.lower().str.replace(' ', '_') # Normalize column names
-        print("load_raw_excel_data_into_db: Lowercased and underscored Columns (Positions Excel):", df.columns.tolist())
+        print(f"Excel file '{POSITIONS_EXCEL_FILE}' read successfully.")
+        print("Original Columns (Positions):", df.columns.tolist())
 
-        # Data cleaning and type conversion for DataFrame
+        df.columns = df.columns.str.lower()
+        print("Lowercased Columns (Positions):", df.columns.tolist())
+
         df['symbol'] = df['symbol'].astype(str).str.upper().str.strip()
         df['buy_date'] = pd.to_datetime(df['buy_date'], errors='coerce').dt.strftime('%Y-%m-%d')
         df['qty'] = pd.to_numeric(df['qty'], errors='coerce').fillna(0).astype(int)
 
-        if 'sell_date' in df.columns:
-            df['sell_date'] = pd.to_datetime(df['sell_date'], errors='coerce').dt.strftime('%Y-%m-%d').replace({pd.NaT: None})
-        else:
-            df['sell_date'] = None
-
-        if 'type' not in df.columns:
-            df['type'] = 'BUY' # Default to BUY if type column is missing in Excel
-        df['type'] = df['type'].fillna('BUY').astype(str).str.upper().str.strip()
-
         currency_like_cols = [
             'current_price', 'avg_price', 'delta', 'daily_change', 'daily_pnl',
-            'tradevalue', 'market_value', 'total_pnl', 'pct_pnl', 'weight_tv', 'weight_mv', 'tvm', 'pos_age'
+            'tradevalue', 'market_value', 'total_pnl',
         ]
         for col in currency_like_cols:
             if col in df.columns:
@@ -128,91 +99,49 @@ def load_raw_excel_data_into_db():
             else:
                 df[col] = 0.0
 
-        string_cols = ['sector', 'account', 'ticker', 'ms_ticker', 'note', 'strategy']
+        other_numeric_cols = [
+            'pct_pnl', 'weight_tv', 'weight_mv', 'tvm', 'pos_age'
+        ]
+        for col in other_numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+            else:
+                df[col] = 0.0
+
+        string_cols = ['sector', 'account', 'ticker', 'ms_ticker']
         for col in string_cols:
             if col in df.columns:
                 df[col] = df[col].fillna('').astype(str).str.strip()
             else:
                 df[col] = ''
 
-        # --- CRITICAL CHANGE: Rename 'avg_price' from Excel to 'buy_price' for DB consistency ---
-        if 'avg_price' in df.columns:
-            df = df.rename(columns={'avg_price': 'buy_price'})
-            print("load_raw_excel_data_into_db: Renamed 'avg_price' to 'buy_price' in DataFrame for DB insertion.")
-        else:
-            print("load_raw_excel_data_into_db: Warning: 'avg_price' column not found in Excel data. Ensuring 'buy_price' exists.")
-            if 'buy_price' not in df.columns:
-                df['buy_price'] = 0.0 # Default if neither avg_price nor buy_price exists
-
-
-        # Filter for only 'BUY' type positions from Excel that are considered 'open'
-        open_positions_from_excel = df[
-            (df['qty'] > 0) &
-            (df['sell_date'].isna()) & # Check for None/NaN in sell_date
-            (df['type'] == 'BUY')
-        ].copy() # Use .copy() to avoid SettingWithCopyWarning
-
-        print(f"load_raw_excel_data_into_db: Found {len(open_positions_from_excel)} open 'BUY' positions in Excel to synchronize.")
-
-        # Now, synchronize with SQLite
-        with sqlite3.connect(DB_NAME) as conn:
-            c = conn.cursor()
-            
-            # 1. Delete all existing 'BUY' type positions from the database
-            c.execute("DELETE FROM positions WHERE type = 'BUY'")
-            print("load_raw_excel_data_into_db: Cleared existing 'BUY' type positions from database.")
-
-            # 2. Insert the current 'open' positions from Excel into the database
-            db_cols = [
-                'ticker', 'symbol', 'sector', 'buy_date', 'sell_date',
-                'buy_price', 'sell_price', 'qty', 'type', 'note', 'strategy',
-                'tradevalue', 'market_value', 'total_pnl', 'pct_pnl', 'tvm', 'pos_age',
-                'account', 'current_price', 'daily_change', 'daily_pnl' # Include all columns
-            ]
-            
-            # Ensure all db_cols are present in open_positions_from_excel, fill with None/0.0 if not
-            for col in db_cols:
-                if col not in open_positions_from_excel.columns:
-                    if col in ["buy_price", "sell_price", "qty", "tradevalue", "market_value", "total_pnl", "pct_pnl", "tvm", "current_price", "daily_change", "daily_pnl"]:
-                        open_positions_from_excel[col] = 0.0
-                    else:
-                        open_positions_from_excel[col] = '' # Default for text columns
-
-            # Reorder columns to match the INSERT statement
-            df_to_insert = open_positions_from_excel[db_cols]
-
-            # Convert DataFrame to list of tuples for executemany
-            data_to_insert = [tuple(row) for row in df_to_insert.values]
-
-            c.executemany(f"""
-                INSERT INTO positions ({', '.join(db_cols)})
-                VALUES ({', '.join(['?'] * len(db_cols))})
-            """, data_to_insert)
-            conn.commit()
-            print(f"load_raw_excel_data_into_db: Inserted {len(data_to_insert)} current open positions from Excel into database.")
+        _raw_excel_data = df.to_dict(orient='records')
+        print(f"Raw Excel data loaded into memory: {len(_raw_excel_data)} records.")
 
     except FileNotFoundError:
-        print(f"load_raw_excel_data_into_db: ERROR: {POSITIONS_EXCEL_FILE} not found. Ensure the Excel file exists in the same directory as main.py.")
+        print(f"ERROR: {POSITIONS_EXCEL_FILE} not found. Ensure the Excel file exists in the same directory as main.py.")
+        _raw_excel_data = []
     except Exception as e:
-        print(f"load_raw_excel_data_into_db: CRITICAL ERROR during load_raw_excel_data_into_db: {type(e).__name__}: {e}")
+        print(f"CRITICAL ERROR during load_raw_excel_data: {type(e).__name__}: {e}")
+        _raw_excel_data = []
 
 def load_dividends_data():
     """Loads dividend data from the Excel file."""
     global _dividends_data
-    print(f"load_dividends_data: Attempting to load dividend data from: {DIVIDENDS_EXCEL_FILE}")
+    print(f"Attempting to load dividend data from: {DIVIDENDS_EXCEL_FILE}")
     if not os.path.exists(DIVIDENDS_EXCEL_FILE):
-        print(f"load_dividends_data: WARNING: {DIVIDENDS_EXCEL_FILE} not found. Skipping dividend data load.")
+        print(f"WARNING: {DIVIDENDS_EXCEL_FILE} not found. Skipping dividend data load.")
         _dividends_data = []
         return
 
     try:
         df = pd.read_excel(DIVIDENDS_EXCEL_FILE)
-        print(f"load_dividends_data: Dividend Excel file '{DIVIDENDS_EXCEL_FILE}' read successfully.")
-        print("load_dividends_data: Original Columns (before lowercasing/renaming):", df.columns.tolist())
+        print(f"Dividend Excel file '{DIVIDENDS_EXCEL_FILE}' read successfully.")
+        print("Original Columns (before lowercasing/renaming):", df.columns.tolist())
 
         # Step 1: Lowercase and replace spaces in all columns
         df.columns = df.columns.str.lower().str.replace(' ', '_')
-        print("load_dividends_data: Columns after lowercasing and underscore replacement:", df.columns.tolist())
+        print("Columns after lowercasing and underscore replacement:", df.columns.tolist())
 
         # Step 2: Define and apply specific renames for consistency with frontend
         # This map should reflect the exact column names after step 1
@@ -224,7 +153,7 @@ def load_dividends_data():
 
         if rename_map:
             df = df.rename(columns=rename_map)
-            print("load_dividends_data: Columns after specific renames:", df.columns.tolist())
+            print("Columns after specific renames:", df.columns.tolist())
 
         # Step 3: Process numeric columns
         # Now, 'rs_per_share' should be the target name if it was renamed
@@ -255,18 +184,18 @@ def load_dividends_data():
                 df[col] = df[col].fillna('')
 
         _dividends_data = df.to_dict(orient='records')
-        print(f"load_dividends_data: Dividend data loaded into memory: {len(_dividends_data)} records.")
+        print(f"Dividend data loaded into memory: {len(_dividends_data)} records.")
 
     except FileNotFoundError:
-        print(f"load_dividends_data: CRITICAL ERROR: {DIVIDENDS_EXCEL_FILE} not found. Ensure the Excel file exists.")
+        print(f"CRITICAL ERROR: {DIVIDENDS_EXCEL_FILE} not found. Ensure the Excel file exists.")
         _dividends_data = []
     except Exception as e:
-        print(f"load_dividends_data: CRITICAL ERROR during load_dividends_data: {type(e).__name__}: {e}")
+        print(f"CRITICAL ERROR during load_dividends_data: {type(e).__name__}: {e}")
         _dividends_data = []
 
 
 # --- Initial Load ---
-load_raw_excel_data_into_db()
+load_raw_excel_data()
 load_dividends_data()
 
 
@@ -294,6 +223,7 @@ class TradeInput(BaseModel):
 class SellTradeRecord(BaseModel):
     symbol: str
     ticker: Optional[str] = None
+    # No longer need buy_date and buy_price here as we'll fetch from DB
     qty: int # This will be the qty_sold
     sell_date: date
     sell_price: float
@@ -309,17 +239,14 @@ class PortfolioSnapshotRequest(BaseModel):
 
 @app.post("/positions")
 async def add_position(trade: TradeInput):
-    """Adds a new buy position to the database."""
     try:
         with sqlite3.connect(DB_NAME) as conn:
             c = conn.cursor()
             c.execute("""
                 INSERT INTO positions (
                     ticker, symbol, sector, buy_date, sell_date,
-                    buy_price, sell_price, qty, type, note, strategy,
-                    current_price, daily_change, daily_pnl,
-                    tradevalue, market_value, total_pnl, pct_pnl, tvm, pos_age, account
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    buy_price, sell_price, qty, type, note, strategy
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 trade.ticker,
                 trade.symbol,
@@ -329,20 +256,9 @@ async def add_position(trade: TradeInput):
                 round(trade.buy_price, 2),
                 round(trade.sell_price, 2) if trade.sell_price is not None else None,
                 trade.qty,
-                trade.type if trade.type else 'BUY', # Ensure type is set, default to BUY
+                trade.type,
                 trade.note,
-                trade.strategy,
-                # Default values for columns not directly from TradeInput
-                0.0, # current_price
-                0.0, # daily_change
-                0.0, # daily_pnl
-                round(trade.buy_price * trade.qty, 2), # tradevalue (initial cost)
-                0.0, # market_value (will be updated by current prices)
-                0.0, # total_pnl
-                0.0, # pct_pnl
-                0.0, # tvm
-                '',  # pos_age
-                ''   # account
+                trade.strategy
             ))
             conn.commit()
         return {"status": "success", "id": c.lastrowid}
@@ -352,7 +268,6 @@ async def add_position(trade: TradeInput):
 
 @app.put("/positions/{position_id}")
 async def update_position(position_id: int, trade: TradeInput):
-    """Updates an existing position in the database."""
     try:
         with sqlite3.connect(DB_NAME) as conn:
             c = conn.cursor()
@@ -387,34 +302,25 @@ async def update_position(position_id: int, trade: TradeInput):
 
 @app.post("/sell_trade")
 async def record_sell_trade(sell_record: SellTradeRecord):
-    """
-    Records a sell trade, handling partial sells using FIFO logic.
-    Updates existing open positions and inserts new 'SELL' records for realized portions.
-    This version uses a more robust method to convert fetched rows to dictionaries.
-    """
     try:
         with sqlite3.connect(DB_NAME) as conn:
             c = conn.cursor()
-            
+            conn.row_factory = sqlite3.Row # Enable row factory for fetching by name
+
             qty_to_sell = sell_record.qty
             total_cash_generated = 0.0
             total_pnl_realized = 0.0
-            remaining_qty_to_sell_overall = qty_to_sell # Track how much still needs to be sold
+            remaining_qty_overall = qty_to_sell # Track how much still needs to be sold
 
             # 1. Find all existing open positions for the symbol, ordered by buy_date (FIFO)
             c.execute("""
                 SELECT id, ticker, symbol, sector, buy_date, buy_price, qty
                 FROM positions
-                WHERE symbol = ? AND sell_date IS NULL AND qty > 0 AND type = 'BUY'
+                WHERE symbol = ? AND sell_date IS NULL AND qty > 0
                 ORDER BY buy_date ASC
             """, (sell_record.symbol,))
+            open_positions = c.fetchall()
 
-            # CRITICAL FIX: Manually create a list of dictionaries from the fetched rows
-            # This is more robust and prevents the "cannot convert dictionary update" error
-            rows = c.fetchall()
-            columns = [col[0] for col in c.description]
-            open_positions = [dict(zip(columns, row)) for row in rows]
-            
             if not open_positions:
                 raise HTTPException(status_code=404, detail=f"No open positions found for symbol {sell_record.symbol}.")
 
@@ -424,7 +330,7 @@ async def record_sell_trade(sell_record: SellTradeRecord):
 
 
             for pos in open_positions:
-                if remaining_qty_to_sell_overall <= 0:
+                if remaining_qty_overall <= 0:
                     break # All requested quantity has been sold
 
                 pos_id = pos['id']
@@ -435,7 +341,7 @@ async def record_sell_trade(sell_record: SellTradeRecord):
                 pos_buy_price = pos['buy_price']
                 pos_current_qty = pos['qty']
 
-                qty_from_this_lot = min(remaining_qty_to_sell_overall, pos_current_qty)
+                qty_from_this_lot = min(remaining_qty_overall, pos_current_qty)
 
                 # Calculate P&L for the portion sold from this lot
                 cost_of_sold_qty_from_this_lot = pos_buy_price * qty_from_this_lot
@@ -491,14 +397,14 @@ async def record_sell_trade(sell_record: SellTradeRecord):
                     round(pct_pnl_for_sold_qty_from_this_lot, 2)
                 ))
 
-                remaining_qty_to_sell_overall -= qty_from_this_lot
+                remaining_qty_overall -= qty_from_this_lot
 
             conn.commit()
 
         return {
             "status": "sell trade recorded successfully",
             "cash_generated": round(total_cash_generated, 2),
-            "remaining_qty_overall_for_symbol": remaining_qty_to_sell_overall # Should be 0 if all requested qty was sold
+            "remaining_qty_overall_for_symbol": remaining_qty_overall # Should be 0 if all requested qty was sold
         }
     except HTTPException as he:
         raise he
@@ -509,7 +415,6 @@ async def record_sell_trade(sell_record: SellTradeRecord):
 
 @app.post("/simulate")
 async def simulate_trade(trade: TradeInput):
-    """Simulates a buy trade to calculate average price and total quantity."""
     try:
         if not trade.symbol:
             raise HTTPException(status_code=400, detail="Symbol is required for simulation")
@@ -518,12 +423,11 @@ async def simulate_trade(trade: TradeInput):
         existing_cost = 0.0
 
         with sqlite3.connect(DB_NAME) as conn:
-            conn.row_factory = dict_factory
+            conn.row_factory = sqlite3.Row
             c = conn.cursor()
-            # Fetch only open 'BUY' positions for simulation
             c.execute("""
                 SELECT qty, buy_price FROM positions
-                WHERE symbol = ? AND sell_date IS NULL AND qty > 0 AND type = 'BUY'
+                WHERE symbol = ? AND sell_date IS NULL AND qty > 0
             """, (trade.symbol,))
             for row in c.fetchall():
                 existing_qty += row["qty"]
@@ -547,39 +451,13 @@ async def simulate_trade(trade: TradeInput):
 
 @app.get("/positions")
 async def get_open_positions():
-    """
-    Fetches and aggregates open positions from the SQLite database.
-    This ensures the frontend always reflects the current state of positions in the DB.
-    """
     print("GET /positions endpoint called.")
-    # Ensure database is populated from Excel if it's empty (initial run)
-    with sqlite3.connect(DB_NAME) as conn:
-        c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM positions WHERE type = 'BUY'") # Check for BUY positions
-        if c.fetchone()[0] == 0:
-            print("get_open_positions: No 'BUY' positions found in database. Attempting to populate from Excel via load_raw_excel_data_into_db().")
-            load_raw_excel_data_into_db() # This will insert into DB if empty or only contains SELL records
-
-    # Now, fetch data directly from the SQLite database
-    open_positions_from_db = []
-    with sqlite3.connect(DB_NAME) as conn:
-        conn.row_factory = dict_factory
-        print(f"get_open_positions: Row factory for connection is: {conn.row_factory}")
-        c = conn.cursor()
-        # Fetch all columns needed for aggregation and display
-        c.execute("""
-            SELECT
-                id, ticker, symbol, sector, buy_date, buy_price, qty,
-                current_price, daily_change, daily_pnl, tradevalue,
-                market_value, total_pnl, pct_pnl, pos_age, account, tvm
-            FROM positions
-            WHERE sell_date IS NULL AND qty > 0 AND type = 'BUY'
-            ORDER BY symbol, buy_date ASC
-        """)
-        open_positions_from_db = c.fetchall()
-    
-    print(f"get_open_positions: Fetched {len(open_positions_from_db)} open positions from database.")
-
+    if not _raw_excel_data:
+        print("Raw Excel data is empty. Attempting to reload.")
+        load_raw_excel_data()
+        if not _raw_excel_data:
+            print("ERROR: Excel data could not be loaded into _raw_excel_data. Returning 500.")
+            raise HTTPException(status_code=500, detail="Failed to load Excel data. Check server logs.")
 
     grouped_by_symbol = defaultdict(lambda: {
         "symbol": "",
@@ -596,35 +474,41 @@ async def get_open_positions():
         "pos_age": "",
         "account": "",
         "tvm": 0.0,
-        "buy_date_first": None, # This will store the buy_date of the earliest open lot for this symbol
+        "buy_date_first": None,
         "avg_price_excel": 0.0,
         "ticker": ""
     })
 
-    print(f"get_open_positions: Processing {len(open_positions_from_db)} DB entries for grouping.")
-    for row in open_positions_from_db:
+    print(f"Processing {len(_raw_excel_data)} raw Excel entries for grouping.")
+    for row in _raw_excel_data:
         try:
             sym = row.get('symbol', '').upper()
             qty = row.get('qty', 0)
-            ticker = str(row.get('ticker', '')) if not pd.isna(row.get('ticker')) else ""
-            buy_date = row.get('buy_date')
-            buy_price = row.get('buy_price', 0.0)
+            ticker_from_excel = str(row.get('ticker', '')) if not pd.isna(row.get('ticker')) else ""
 
-            # Ensure numeric values are floats
             for k in [
-                'current_price', 'daily_change', 'daily_pnl',
-                'tradevalue', 'market_value', 'total_pnl', 'pct_pnl', 'tvm'
+                'current_price', 'avg_price', 'delta', 'daily_change', 'daily_pnl',
+                'tradevalue', 'market_value', 'total_pnl', 'pct_pnl', 'weight_tv', 'weight_mv', 'tvm'
             ]:
-                row[k] = float(row.get(k, 0.0))
+                if pd.isna(row.get(k)):
+                    row[k] = 0.0
+                else:
+                    row[k] = float(row[k])
 
-            # Ensure string values are stripped
             for k in ['sector', 'pos_age', 'account']:
-                row[k] = str(row.get(k, '')).strip()
+                if pd.isna(row.get(k)):
+                    row[k] = ""
 
-            if sym and qty > 0: # Already filtered for sell_date IS NULL and type = 'BUY'
+            if sym and qty > 0 and pd.isna(row.get('sell_date')):
+                current_buy_date = row.get('buy_date')
+                if current_buy_date:
+                    if (grouped_by_symbol[sym]["buy_date_first"] is None or
+                        current_buy_date < grouped_by_symbol[sym]["buy_date_first"]):
+                        grouped_by_symbol[sym]["buy_date_first"] = current_buy_date
+
                 if grouped_by_symbol[sym]["totalQty"] == 0:
                     grouped_by_symbol[sym]["symbol"] = sym
-                    grouped_by_symbol[sym]["ticker"] = ticker
+                    grouped_by_symbol[sym]["ticker"] = ticker_from_excel
                     grouped_by_symbol[sym]["sector"] = row.get('sector', '')
                     grouped_by_symbol[sym]["currentPrice"] = row.get('current_price', 0.0)
                     grouped_by_symbol[sym]["daily_change"] = row.get('daily_change', 0.0)
@@ -636,17 +520,12 @@ async def get_open_positions():
                     grouped_by_symbol[sym]["pos_age"] = row.get('pos_age', '')
                     grouped_by_symbol[sym]["account"] = row.get('account', '')
                     grouped_by_symbol[sym]["tvm"] = row.get('tvm', 0.0)
-                    grouped_by_symbol[sym]["buy_date_first"] = buy_date # Set initial buy date
-
-                # Update buy_date_first if current lot's buy_date is earlier
-                if buy_date and (grouped_by_symbol[sym]["buy_date_first"] is None or buy_date < grouped_by_symbol[sym]["buy_date_first"]):
-                    grouped_by_symbol[sym]["buy_date_first"] = buy_date
 
                 grouped_by_symbol[sym]["totalQty"] += qty
-                grouped_by_symbol[sym]["totalCost"] += qty * buy_price # Use buy_price from DB record
+                grouped_by_symbol[sym]["totalCost"] += qty * row.get('avg_price', 0.0)
 
-        except Exception as entry_error:
-            print(f"get_open_positions: ERROR: Problem creating final entry for symbol '{sym}': {entry_error}")
+        except Exception as row_error:
+            print(f"ERROR: Problem processing row for symbol '{row.get('symbol', 'N/A')}': {row_error}")
             continue
 
     result_list = []
@@ -690,10 +569,10 @@ async def get_open_positions():
                 }
                 result_list.append(entry)
         except Exception as entry_error:
-            print(f"get_open_positions: ERROR: Problem creating final entry for symbol '{sym}': {entry_error}")
+            print(f"ERROR: Problem creating final entry for symbol '{sym}': {entry_error}")
             continue
 
-    print(f"get_open_positions: Successfully processed {len(result_list)} open positions from DB.")
+    print(f"Successfully processed {len(result_list)} open positions.")
     return result_list
 
 
@@ -701,18 +580,20 @@ async def get_open_positions():
 async def get_closed_positions():
     """Fetches realised positions from SQLite."""
     with sqlite3.connect(DB_NAME) as conn:
-        conn.row_factory = dict_factory
+        conn.row_factory = sqlite3.Row
         c = conn.cursor()
         c.execute("""
             SELECT * FROM positions
             WHERE type IN ('SELL', 'CLOSED_FULL_SELL') AND qty = 0 AND sell_date IS NOT NULL
             ORDER BY sell_date DESC
         """)
-        rows = c.fetchall()
-        for row in rows:
+        rows = []
+        for row in c.fetchall():
+            d_row = dict(row)
             for key in ['buy_price', 'sell_price', 'tradevalue', 'market_value', 'total_pnl', 'pct_pnl', 'tvm']:
-                if row.get(key) is not None:
-                    row[key] = round(row[key], 2)
+                if d_row.get(key) is not None:
+                    d_row[key] = round(d_row[key], 2)
+            rows.append(d_row)
         return rows
 
 
@@ -720,17 +601,19 @@ async def get_closed_positions():
 async def get_all_trades():
     """Fetches all trade entries from SQLite (both buys and sells)."""
     with sqlite3.connect(DB_NAME) as conn:
-        conn.row_factory = dict_factory
+        conn.row_factory = sqlite3.Row
         c = conn.cursor()
         c.execute("""
             SELECT * FROM positions
             ORDER BY buy_date ASC
         """)
-        rows = c.fetchall()
-        for row in rows:
+        rows = []
+        for row in c.fetchall():
+            d_row = dict(row)
             for key in ['buy_price', 'sell_price', 'tradevalue', 'market_value', 'total_pnl', 'pct_pnl', 'tvm']:
-                if row.get(key) is not None:
-                    row[key] = round(row[key], 2)
+                if d_row.get(key) is not None:
+                    d_row[key] = round(d_row[key], 2)
+            rows.append(d_row)
         return rows
 
 @app.get("/all_trades")
@@ -740,8 +623,7 @@ async def get_all_trades_alias():
 @app.post("/reload-excel-data")
 async def reload_excel_data():
     """Endpoint to manually trigger a reload of Excel data."""
-    # This will now re-read Excel and re-populate the 'BUY' positions in DB
-    load_raw_excel_data_into_db()
+    load_raw_excel_data()
     return {"status": "Excel data reloaded successfully"}
 
 @app.post("/snapshot")
@@ -752,48 +634,40 @@ async def take_snapshot(request: PortfolioSnapshotRequest):
     if today_date_obj.weekday() >= 5: # 5 is Saturday, 6 is Sunday
         raise HTTPException(status_code=400, detail="Snapshots can only be taken on weekdays.")
 
-    # When calculating current_market_value, etc., read from the DB for accuracy
-    current_market_value = 0.0
-    total_cost_value = 0.0
-    daily_pnl_sum = 0.0
-
-    with sqlite3.connect(DB_NAME) as conn:
-        conn.row_factory = dict_factory
-        c = conn.cursor()
-        c.execute("""
-            SELECT current_price, qty, buy_price, daily_pnl
-            FROM positions
-            WHERE sell_date IS NULL AND qty > 0 AND type = 'BUY'
-        """)
-        open_positions_for_snapshot = c.fetchall()
-
-        for pos in open_positions_for_snapshot:
-            current_market_value += pos['current_price'] * pos['qty']
-            total_cost_value += pos['buy_price'] * pos['qty']
-            daily_pnl_sum += pos['daily_pnl']
-
+    current_market_value = sum(pos['current_price'] * pos['qty'] for pos in _raw_excel_data)
+    total_cost_value = sum(pos['avg_price'] * pos['qty'] for pos in _raw_excel_data)
     total_pnl = current_market_value - total_cost_value
+    daily_pnl_sum = sum(pos['daily_pnl'] for pos in _raw_excel_data)
 
     portfolio_index_value = 0.0
     message = ""
 
     with sqlite3.connect(DB_NAME) as conn:
-        conn.row_factory = dict_factory # ⚡️ FIX: Set row factory once at the start ⚡️
         c = conn.cursor()
         c.execute("SELECT * FROM portfolio_snapshots ORDER BY date DESC LIMIT 1")
-        last_snapshot = c.fetchone() # ⚡️ FIX: Fetch once and get a dictionary ⚡️
+        last_snapshot_row = c.fetchone()
 
-        if not last_snapshot:
+        if not last_snapshot_row:
             portfolio_index_value = 100.0
             message = "Initial portfolio snapshot taken. Index set to 100 (base for relative performance)."
         else:
-            # ⚡️ FIX: The rest of the logic can now use 'last_snapshot' directly ⚡️
+            last_snapshot = {
+                "date": last_snapshot_row[0],
+                "market_value": last_snapshot_row[1],
+                "total_cost_value": last_snapshot_row[2],
+                "total_pnl": last_snapshot_row[3],
+                "daily_pnl_sum": last_snapshot_row[4],
+                "portfolio_index_value": last_snapshot_row[5],
+                "net_cash_flow_today": last_snapshot_row[6]
+            }
+
             c.execute("DELETE FROM portfolio_snapshots WHERE date = ?", (today_str,))
             if c.rowcount > 0:
                 print(f"Existing snapshot for {today_str} deleted for update.")
                 message = f"Portfolio snapshot for {today_str} updated."
             else:
                 message = f"Portfolio snapshot taken for {today_str}."
+
 
             pmv_yesterday = last_snapshot['market_value']
             index_yesterday = last_snapshot['portfolio_index_value']
@@ -812,8 +686,8 @@ async def take_snapshot(request: PortfolioSnapshotRequest):
                      portfolio_index_value = 0.0
                 else:
                     portfolio_index_value = index_yesterday
+                print("Index unchanged (no meaningful activity/calculation for the day).")
 
-        # Insert/Update snapshot
         c.execute("""
             INSERT OR REPLACE INTO portfolio_snapshots (
                 date, market_value, total_cost_value, total_pnl, daily_pnl_sum, portfolio_index_value, net_cash_flow_today
@@ -829,8 +703,7 @@ async def take_snapshot(request: PortfolioSnapshotRequest):
         ))
         conn.commit()
 
-    return {
-        "message": message, "snapshot": {
+    return {"message": message, "snapshot": {
         "date": today_str,
         "market_value": round(current_market_value, 2),
         "total_cost_value": round(total_cost_value, 2),
@@ -843,10 +716,10 @@ async def take_snapshot(request: PortfolioSnapshotRequest):
 @app.get("/portfolio-history")
 async def get_portfolio_history():
     with sqlite3.connect(DB_NAME) as conn:
-        conn.row_factory = dict_factory
+        conn.row_factory = sqlite3.Row
         c = conn.cursor()
         c.execute("SELECT * FROM portfolio_snapshots ORDER BY date ASC")
-        rows = c.fetchall()
+        rows = [dict(row) for row in c.fetchall()]
         return rows
 
 @app.get("/calculate-live-index")
@@ -855,40 +728,31 @@ async def calculate_live_index(
 ):
     today_str = datetime.now().strftime('%Y-%m-%d')
 
-    current_market_value = 0.0
-    total_cost_value = 0.0
-    daily_pnl_sum = 0.0
-
-    with sqlite3.connect(DB_NAME) as conn:
-        conn.row_factory = dict_factory
-        c = conn.cursor()
-        c.execute("""
-            SELECT current_price, qty, buy_price, daily_pnl
-            FROM positions
-            WHERE sell_date IS NULL AND qty > 0 AND type = 'BUY'
-        """)
-        open_positions_for_live_calc = c.fetchall()
-
-        for pos in open_positions_for_live_calc:
-            current_market_value += pos['current_price'] * pos['qty']
-            total_cost_value += pos['buy_price'] * pos['qty']
-            daily_pnl_sum += pos['daily_pnl']
-
+    current_market_value = sum(pos['current_price'] * pos['qty'] for pos in _raw_excel_data)
+    total_cost_value = sum(pos['avg_price'] * pos['qty'] for pos in _raw_excel_data)
     total_pnl = current_market_value - total_cost_value
-
+    daily_pnl_sum = sum(pos['daily_pnl'] for pos in _raw_excel_data)
 
     live_portfolio_index_value = 0.0
 
     with sqlite3.connect(DB_NAME) as conn:
-        conn.row_factory = dict_factory
         c = conn.cursor()
         c.execute("SELECT * FROM portfolio_snapshots ORDER BY date DESC LIMIT 1")
-        last_snapshot = c.fetchone() # ⚡️ FIX: Fetch the dictionary directly ⚡️
-        
-        if not last_snapshot:
+        last_snapshot_row = c.fetchone()
+
+        if not last_snapshot_row:
             live_portfolio_index_value = 100.0
         else:
-            # ⚡️ FIX: Use 'last_snapshot' dictionary directly ⚡️
+            last_snapshot = {
+                "date": last_snapshot_row[0],
+                "market_value": last_snapshot_row[1],
+                "total_cost_value": last_snapshot_row[2],
+                "total_pnl": last_snapshot_row[3],
+                "daily_pnl_sum": last_snapshot_row[4],
+                "portfolio_index_value": last_snapshot_row[5],
+                "net_cash_flow_today": last_snapshot_row[6]
+            }
+
             pmv_yesterday = last_snapshot['market_value']
             index_yesterday = last_snapshot['portfolio_index_value']
 
@@ -916,7 +780,6 @@ async def calculate_live_index(
 @app.get("/dividends")
 async def get_dividends():
     """Returns raw and aggregated dividend data."""
-    global _dividends_data # Keep global for dividends as it's not DB-backed yet
     if not _dividends_data:
         load_dividends_data()
         if not _dividends_data:
@@ -973,4 +836,3 @@ async def reload_dividends_data():
 # --- Run ---
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
